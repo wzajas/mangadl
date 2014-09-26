@@ -22,12 +22,12 @@ sub get_pages {
 }
 
 sub get_image {
- my ($tree,$directory,$page,$pages) = @_;
- my $image = $tree->findvalue ( '//img[@id="image"]/@src' ) ;
+ my ($chapter_tree,$directory,$page,$pages) = @_;
+ my $image = $chapter_tree->findvalue ( '//img[@id="image"]/@src' ) ;
  if ($image) {
   my ($extension) = $image =~ /\.([^\.]*)\?v=[0-9]+$/;
   my $zerofill = length($pages);
-  my $imgname = sprintf("%0${zerofill}d.%s",++$page,$extension);
+  my $imgname = sprintf("%0${zerofill}d.%s",$page,$extension);
   my $mech = WWW::Mechanize->new();
   my $res = $mech->get($image, ':content_file' => $directory.'/'.$imgname);
   return $res;
@@ -95,8 +95,8 @@ sub chapters_exists {
 }
 
 sub manga_exists {
- my ($mech) = @_;
- if($mech->content =~ /<div class="manga_detail">/) {
+ my ($manga_tree) = @_;
+ if($manga_tree->findvalue ( '//span[@id="current_rating"]') ){
   return 1;
  }
  return 0;
@@ -119,7 +119,7 @@ getopts("m:r:nla", \%opt);
 my @conflict_opts = ( [ 'r', 'n' ], [ 'a', 'n' ]);
 foreach my $conflicts (@conflict_opts) {
  if ( ( grep { exists $opt{$_} } @$conflicts ) > 1 ) {
-  say "Select one of @$conflicts";
+  say "Select one of ", join(",",@$conflicts);
   exit(1);
  }
 }
@@ -131,23 +131,15 @@ if (not defined $opt{m}) {
 
 my ($manga) = $opt{m} =~ /([a-z0-9_]+)/;
 
-my $browser = WWW::Mechanize->new( );
+my $manga_tree = HTML::TreeBuilder::XPath->new_from_url( qq(http://www.mangahere.co/manga/${manga}/) );
 
-$browser->agent('User-Agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/37.0.2062.120 Safari/537.36');
-$browser->get( qq(http://www.mangahere.co/manga/${manga}/) );
-
-if( !manga_exists($browser)) {
+if( !manga_exists($manga_tree)) {
  say "Manga doesn't exists";
  exit(1);
 }
 
-my $url = $browser->uri;
-
-my $tree= HTML::TreeBuilder::XPath->new;
-$tree->parse($browser->content());
-
 my %removed_chapters = ();
-my %chapters = get_chapters($tree, $manga);
+my %chapters = get_chapters($manga_tree, $manga);
 
 my @local_chapters;
 if ( not defined $opt{'a'} ) {
@@ -177,36 +169,30 @@ if (defined $opt{l}) {
  exit(0);
 }
 
-foreach my $chapter (sort { $a <=> $b} keys(%chapters)) {
+foreach my $chapter (sort { $a <=> $b } keys(%chapters)) {
 
-my $browser_chapter = WWW::Mechanize->new();
-$browser_chapter->agent('User-Agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/37.0.2062.120 Safari/537.36');
+my $chapter_tree= HTML::TreeBuilder::XPath->new_from_url( $chapters{$chapter} );
 
-$browser_chapter->get( $chapters{$chapter} );
-my $tree_chapter= HTML::TreeBuilder::XPath->new;
-$tree_chapter->parse($browser_chapter->content());
-
-my ($chapter) = $browser_chapter->uri =~ /\/(c[\.0-9]*)\/$/;
+my ($chapter) = $chapters{$chapter} =~ /\/(c[\.0-9]*)\/$/;
 if ( not -d $chapter) {
  mkdir $chapter;
 }
 
-my @pages = get_pages($tree_chapter);
+my @pages = get_pages($chapter_tree);
 
 while (my ($page, $page_url) = each @pages) {
  if ( $page_url =~ /html$/ ) {
-  $browser_chapter->get($page_url);
-  $tree_chapter= HTML::TreeBuilder::XPath->new;
-  $tree_chapter->parse($browser_chapter->content());
+  $chapter_tree= HTML::TreeBuilder::XPath->new_from_url( $page_url );
  }
+ $page++;
  my $pages = @pages;
- my $res = get_image($tree_chapter,$chapter,$page,$pages);
+ my $res = get_image($chapter_tree,$chapter,$page,$pages);
  if(!$res || !$res->is_success) {
-  say "Error chapter $chapter $page / $pages url: $page_url";
+  say "Error chapter ", join(" ", $chapter, $page, "/", $pages, "url:", $page_url);
  } else {
-  say "Got chapter $chapter $page / $pages";
+  say "Got chapter ", join(" ", $chapter, $page, "/", $pages);
  }
- $tree_chapter->delete;
+ $chapter_tree->delete;
 }
 
 }
