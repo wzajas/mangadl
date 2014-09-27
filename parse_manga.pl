@@ -113,8 +113,20 @@ sub list_chapters {
  undef %tmp;
 }
 
+sub print_help {
+ say "";
+ say "Download mangas from mangahere.co";
+ say "";
+ say " -h this help message";
+ say " -m <manga_tile> manga title from url http://www.mangahere.co/manga/<manga_title>/";
+ say " -r <range> chapter range eg. 1 or 1-3";
+ say " -l list what would be downloaded";
+ say " -n catch only the newest chapters (only if you have already downloaded something)";
+ say "";
+}
+
 my %opt=();
-getopts("m:r:nla", \%opt);
+getopts("m:r:nlah", \%opt) or die "Please use -h for help.";
 
 my @conflict_opts = ( [ 'r', 'n' ], [ 'a', 'n' ]);
 foreach my $conflicts (@conflict_opts) {
@@ -122,6 +134,11 @@ foreach my $conflicts (@conflict_opts) {
   say "Select one of ", join(",",@$conflicts);
   exit(1);
  }
+}
+
+if ( defined $opt{h}) {
+ print_help();
+ exit(0);
 }
 
 if (not defined $opt{m}) {
