@@ -7,11 +7,23 @@ use feature qw(say);
 use File::Find;
 use Getopt::Std;
 use HTML::TreeBuilder::XPath;
+use File::Path qw(make_path);
 
 sub get_chapters {
  my ($tree,$manga) = @_;
  my @links = $tree->findvalues ( '//div[@class="detail_list"]/ul/li/span[@class="left"]/a[@class="color_0077"]/@href');
- my %chapters = map { $_ =~ qr/\/c0*([\.0-9]+)\/$/ , $_ } @links;
+ my %chapters = ();
+ my @key;
+ my $id = @links;
+ foreach my $link (@links) {
+  if ( $link =~ qr/\/${manga}\/c0*([\.0-9]+)\/$/ ) {
+   (@key) = $link =~ qr/\/${manga}\/(c[\.0-9]+)\/$/;
+  } else {
+   (@key) = $link =~ qr/\/(v[0-9]*)\/(c[\.0-9]*)\/$/;
+  }
+  $chapters{ join("/", @key) }{'url'} = $link;
+  $chapters{ join("/", @key) }{'id'} = $id--;
+ }
  return %chapters;
 }
 
@@ -43,55 +55,48 @@ sub move_to_removed {
 }
 
 sub get_chapters_to_sync {
- my ($chapters,$chapter_directories,$range,$only_new,$removed_chapters) = @_;
- my %local = map { $_ => 1 } @{$chapter_directories};
+ my ($chapters,$local_chapters,$range,$only_new) = @_;
+ #remote local chapters
+ my %local = map { $_ => 1 } @{$local_chapters};
  my @chapters = keys %{$chapters};
  foreach ( grep { $local{ $_ } } @chapters) {
-  move_to_removed($chapters,$removed_chapters,$_);
+  $chapters->{$_}->{removed}=1;
  }
  if ( @{$range} ) {
-  foreach ( grep { $_ <@{$range}[0] || $_ > @{$range}[1] } keys %{$chapters} ) {
-   move_to_removed($chapters,$removed_chapters,$_);
+  foreach my $chapter (sort keys(%{$chapters})) {
+   if ( $chapters->{$chapter}->{'id'} < @{$range}[0] || $chapters->{$chapter}->{'id'} > @{$range}[1] ) {
+    $chapters->{$chapter}->{removed}=1;
+   }
   }
  } elsif ($only_new) {
-  if(@$chapter_directories) {
-   foreach ( grep { $_ <= ((sort {$a <=> $b} @$chapter_directories)[-1]) } keys %{$chapters} ) {
-    move_to_removed($chapters,$removed_chapters,$_);
+  if(@$local_chapters) {
+   my $max = ((sort @$local_chapters)[-1]);
+   my $remove = 1;
+   foreach my $chapter (sort keys(%{$chapters})) {
+     $chapters->{$chapter}->{removed}=1 if $remove;
+     $remove = 0 if $chapter eq $max;
    }
   }
  }
 }
 
-#http://stackoverflow.com/questions/3795490/how-can-i-use-filefind-in-perl
+#find2perl -type d -name "[cv][.0-9]*"
 sub find_chapter_directories {
  my @chapter_directories;
- find( {
-        preprocess => \&limit_depth,
-        wanted => sub { push @chapter_directories,  $_ =~ /c0+([\.0-9]*)/ if -d $_ and $_ =~ /^c[\.0-9]*$/; }
-       },
-       ".");
+ File::Find::find({
+	wanted => sub {
+		my ($dev,$ino,$mode,$nlink,$uid,$gid,$name);
+		(($dev,$ino,$mode,$nlink,$uid,$gid) = lstat($_)) &&
+		-d _ &&
+		/^[cv][\.0-9]*.*\z/s
+		&& $File::Find::name =~ s/^..//
+		&& push(@chapter_directories,$File::Find::name);
+	}
+ }, '.');
+ while (my ($index, $directory) = each @chapter_directories) {
+  splice(@chapter_directories,$index,1) if $directory =~ /v[\.0-9]*$/;
+ }
  return @chapter_directories;
-}
-
-sub limit_depth {
- my $depth = $File::Find::dir =~ tr[/][];
- if ($depth < 1) {
-  return @_;
- } else {
-  return grep { not -d } @_;
- }
-}
-
-sub chapter_directories {
-     $_ =~ /c0+([\.0-9]*)/ if -d $_ and $_ =~ /^c[\.0-9]*$/;
-}
-
-sub chapters_exists {
- my ($chapters, $check) = @_;
- foreach (@{$check}) {
-  return 0 if not defined $chapters->{ $_ };
- }
- return 1;
 }
 
 sub manga_exists {
@@ -103,14 +108,10 @@ sub manga_exists {
 }
 
 sub list_chapters {
- my ($chapters,$deleted_chapters) = @_;
- my %tmp;
- map { $tmp{$_} = 'D' } keys %{$chapters};
- map { $tmp{$_} = 'R' } keys %{$deleted_chapters};
- foreach (sort { $a <=> $b } keys %tmp) {
-  say "$_ => $tmp{$_}";
+ my ($chapters) = @_;
+ foreach (sort keys %{$chapters}) {
+  say "(",$chapters->{$_}->{'id'},") ", $_, " => ", (defined ($chapters->{$_}->{'removed'}) ) ? 'Skip' : 'Download';
  }
- undef %tmp;
 }
 
 sub print_help {
@@ -155,7 +156,6 @@ if( !manga_exists($manga_tree)) {
  exit(1);
 }
 
-my %removed_chapters = ();
 my %chapters = get_chapters($manga_tree, $manga);
 
 my @local_chapters;
@@ -163,14 +163,21 @@ if ( not defined $opt{'a'} ) {
  @local_chapters = find_chapter_directories();
 }
 
+if ( defined $opt{'n'} and @local_chapters and not defined $chapters{ ((sort @local_chapters)[-1]) } ) {
+ say "Local chapters not found in chapter list, unable to determine newest chapter.";
+ exit(1);
+}
+
 my @range=();
 if (defined $opt{r}) {
  if($opt{r} =~ /^[\.0-9]+(-[\.0-9]+)??$/) {
   (@range) = grep defined && /^[\.0-9]+$/, $opt{r} =~ /^([\.0-9]+)(-([\.0-9]+))??$/;
   $range[1]=$range[0] if not defined $range[1];
-  if(!chapters_exists(\%chapters,\@range))  {
-   say "Specified chapters don't exist";
-   exit(1);
+  foreach (@range) {
+   if ( $_ > scalar keys(%chapters) ) {
+    say "Specified chapters don't exist";
+    exit(1);
+   }
   }
   @range = sort { $a <=> $b} @range;
  } else {
@@ -179,20 +186,23 @@ if (defined $opt{r}) {
  }
 }
 
-get_chapters_to_sync(\%chapters, \@local_chapters, \@range, defined $opt{'n'},\%removed_chapters);
+
+get_chapters_to_sync(\%chapters, \@local_chapters, \@range, defined $opt{'n'});
 
 if (defined $opt{l}) {
- list_chapters(\%chapters,\%removed_chapters);
+ list_chapters(\%chapters);
  exit(0);
 }
 
-foreach my $chapter (sort { $a <=> $b } keys(%chapters)) {
+foreach my $chapter (sort keys(%chapters)) {
 
-my $chapter_tree= HTML::TreeBuilder::XPath->new_from_url( $chapters{$chapter} );
+next if defined $chapters{$chapter}{'removed'};
 
-my ($chapter) = $chapters{$chapter} =~ /\/(c[\.0-9]*)\/$/;
+my $chapter_tree= HTML::TreeBuilder::XPath->new_from_url( $chapters{$chapter}{url} );
+say $chapters{$chapter}{url};
+
 if ( not -d $chapter) {
- mkdir $chapter;
+ make_path($chapter);
 }
 
 my @pages = get_pages($chapter_tree);
