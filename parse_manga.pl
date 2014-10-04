@@ -4,40 +4,66 @@ use Data::Dumper;
 use warnings;
 use WWW::Mechanize;
 use feature qw(say);
-use File::Find;
+use File::Find::Rule;
 use Getopt::Std;
 use HTML::TreeBuilder::XPath;
 use File::Path qw(make_path);
+use URI;
+
+my %hosts = (
+	'www.mangahere.co' =>  {
+		'exists_xpath' => '//span[@id="current_rating"]',
+		'manga_regex' => qr/manga\/([a-z_]*)\/$/,
+		'chapters_xpath' => '//div[@class="detail_list"]/ul/li/span[@class="left"]/a[@class="color_0077"]/@href',
+		'chapters_order' => 1,
+		'pages_xpath' => '//div/span/select[@class="wid60"]/option/@value',
+		'image_xpath' => '//img[@id="image"]/@src',
+		'image_extension' => qr/\.([^\.]*)\?v=[0-9]+$/,
+		'split_pages' => 2,
+		'local_chapters' => qr/^[cv][0-9]+$/,
+		'grab_chapters' => {
+			'1' => qr/\/(v[0-9]+)\/(c[\.0-9]+)\/$/,
+			'2' => qr/\/(c[\.0-9]+)\/$/,
+		},
+		'post_find' => {
+			'1' => qr/^v[0-9]+$/,
+		},
+		'reload_page_regexp' => qr/html$/,
+	},
+);
 
 sub get_chapters {
- my ($tree,$manga) = @_;
- my @links = $tree->findvalues ( '//div[@class="detail_list"]/ul/li/span[@class="left"]/a[@class="color_0077"]/@href');
+ my ($tree,$manga_host) = @_;
+ my @links = $tree->findvalues ( $manga_host->{ 'chapters_xpath' } );
  my %chapters = ();
- my @key;
- my $id = @links;
+ my $id;
+ $id = @links if $manga_host->{ 'chapters_order' };
+ $id = 1 if !$manga_host->{ 'chapters_order' };
  foreach my $link (@links) {
-  if ( $link =~ qr/\/${manga}\/c0*([\.0-9]+)\/$/ ) {
-   (@key) = $link =~ qr/\/${manga}\/(c[\.0-9]+)\/$/;
-  } else {
-   (@key) = $link =~ qr/\/(v[0-9]*)\/(c[\.0-9]*)\/$/;
+  my @key;
+  foreach (sort keys (%{$manga_host->{ 'grab_chapters' }})) {
+   if( !@key and $link =~ $manga_host->{ 'grab_chapters' }->{$_} ){
+    (@key) = $link =~ $manga_host->{ 'grab_chapters' }->{$_};
+   }
   }
   $chapters{ join("/", @key) }{'url'} = $link;
-  $chapters{ join("/", @key) }{'id'} = $id--;
+  $chapters{ join("/", @key) }{'id'} = $id-- if $manga_host->{ 'chapters_order' };
+  $chapters{ join("/", @key) }{'id'} = $id++ if !$manga_host->{ 'chapters_order' };
  }
  return %chapters;
 }
 
 sub get_pages {
- my ($tree) = @_;
- my @pages = $tree->findvalues ( '//div/span/select[@class="wid60"]/option/@value' );
- return @pages[0..$#pages/2];
+ my ($tree, $xpath, $split_pages) = @_;
+ my @pages = $tree->findvalues ( $xpath );
+ return @pages[0..$#pages/$split_pages];
 }
 
 sub get_image {
- my ($chapter_tree,$directory,$page,$pages) = @_;
- my $image = $chapter_tree->findvalue ( '//img[@id="image"]/@src' ) ;
+ my ($chapter_tree,$manga_host,$directory,$page,$pages) = @_;
+ my $image = $chapter_tree->findvalue ( $manga_host->{ 'image_xpath' } ) ;
  if ($image) {
-  my ($extension) = $image =~ /\.([^\.]*)\?v=[0-9]+$/;
+  my ($extension) = $image =~ $manga_host->{ 'image_extension' };
   my $zerofill = length($pages);
   my $imgname = sprintf("%0${zerofill}d.%s",$page,$extension);
   my $mech = WWW::Mechanize->new();
@@ -80,28 +106,20 @@ sub get_chapters_to_sync {
  }
 }
 
-#find2perl -type d -name "[cv][.0-9]*"
 sub find_chapter_directories {
- my @chapter_directories;
- File::Find::find({
-	wanted => sub {
-		my ($dev,$ino,$mode,$nlink,$uid,$gid,$name);
-		(($dev,$ino,$mode,$nlink,$uid,$gid) = lstat($_)) &&
-		-d _ &&
-		/^[cv][\.0-9]*.*\z/s
-		&& $File::Find::name =~ s/^..//
-		&& push(@chapter_directories,$File::Find::name);
-	}
- }, '.');
- while (my ($index, $directory) = each @chapter_directories) {
-  splice(@chapter_directories,$index,1) if $directory =~ /v[\.0-9]*$/;
+ my ($host) = @_;
+ my @chapter_directories = File::Find::Rule->directory()->name( $host->{'local_chapters'} )->in(".");
+ foreach my $remove ($host->{ 'post_find' }) {
+  while (my ($index, $directory) = each @chapter_directories) {
+   splice(@chapter_directories,$index,1) if $directory =~ $remove;
+  }
  }
  return @chapter_directories;
 }
 
 sub manga_exists {
- my ($manga_tree) = @_;
- if($manga_tree->findvalue ( '//span[@id="current_rating"]') ){
+ my ($manga_tree,$xpath) = @_;
+ if($manga_tree->findvalue ( $xpath ) ){
   return 1;
  }
  return 0;
@@ -119,7 +137,7 @@ sub print_help {
  say "Download mangas from mangahere.co";
  say "";
  say " -h this help message";
- say " -m <manga_tile> manga title from url http://www.mangahere.co/manga/<manga_title>/";
+ say " -m <manga_url> ie. http://www.mangahere.co/manga/<manga_title>/";
  say " -r <range> chapter range eg. 1 or 1-3";
  say " -l list what would be downloaded";
  say " -n catch only the newest chapters (only if you have already downloaded something)";
@@ -143,24 +161,28 @@ if ( defined $opt{h}) {
 }
 
 if (not defined $opt{m}) {
- say "Specify manga with -m <manga_name_from_url>";
+ say "Specify manga with -m <manga_url>";
  exit(1);
 }
 
-my ($manga) = $opt{m} =~ /([a-z0-9_]+)/;
+my $manga_url = $opt{m};
 
-my $manga_tree = HTML::TreeBuilder::XPath->new_from_url( qq(http://www.mangahere.co/manga/${manga}/) );
+my $manga_host = URI->new( qq(${manga_url}/) )->host;
 
-if( !manga_exists($manga_tree)) {
+my ($manga) = $manga_url =~ $hosts{ $manga_host }{ 'manga_regex' };
+
+my $manga_tree = HTML::TreeBuilder::XPath->new_from_url( $manga_url );
+
+if( !manga_exists($manga_tree,$hosts{ $manga_host }{ 'exists_xpath' })) {
  say "Manga doesn't exists";
  exit(1);
 }
 
-my %chapters = get_chapters($manga_tree, $manga);
+my %chapters = get_chapters($manga_tree, $hosts{ $manga_host });
 
 my @local_chapters;
 if ( not defined $opt{'a'} ) {
- @local_chapters = find_chapter_directories();
+ @local_chapters = find_chapter_directories($hosts{ $manga_host });
 }
 
 if ( defined $opt{'n'} and @local_chapters and not defined $chapters{ ((sort @local_chapters)[-1]) } ) {
@@ -205,15 +227,14 @@ if ( not -d $chapter) {
  make_path($chapter);
 }
 
-my @pages = get_pages($chapter_tree);
+my @pages = get_pages($chapter_tree, $hosts{ $manga_host }{ 'pages_xpath' }, $hosts{ $manga_host }{ 'split_pages' });
+;
 
 while (my ($page, $page_url) = each @pages) {
- if ( $page_url =~ /html$/ ) {
-  $chapter_tree= HTML::TreeBuilder::XPath->new_from_url( $page_url );
- }
+ $chapter_tree= HTML::TreeBuilder::XPath->new_from_url( $page_url ) if $page_url =~ $hosts{ $manga_host }{ 'reload_page_regexp' };
  $page++;
  my $pages = @pages;
- my $res = get_image($chapter_tree,$chapter,$page,$pages);
+ my $res = get_image($chapter_tree,$hosts{ $manga_host },$chapter,$page,$pages);
  if(!$res || !$res->is_success) {
   say "Error chapter ", join(" ", $chapter, $page, "/", $pages, "url:", $page_url);
  } else {
