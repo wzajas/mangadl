@@ -13,7 +13,6 @@ use URI;
 my %hosts = (
 	'www.mangahere.co' =>  {
 		'exists_xpath' => '//span[@id="current_rating"]',
-		'manga_regex' => qr/manga\/([a-z_]*)\/$/,
 		'chapters_xpath' => '//div[@class="detail_list"]/ul/li/span[@class="left"]/a[@class="color_0077"]/@href',
 		'chapters_order' => 1,
 		'pages_xpath' => '//div/span/select[@class="wid60"]/option/@value',
@@ -29,6 +28,27 @@ my %hosts = (
 			'1' => qr/^v[0-9]+$/,
 		},
 		'reload_page_regexp' => qr/html$/,
+	},
+	'www.mangapanda.com' =>  {
+		'exists_xpath' => '//div[@id="mangaproperties"]',
+		'chapters_xpath' => '//div[@id="chapterlist"]/table[@id="listing"]/tr/td/a/@href',
+		'postprocess_chapters' => { 
+				'^' => 'http://www.mangapanda.com',
+		},
+		'chapters_order' => 0,
+		'pages_xpath' => '//select[@id="pageMenu"]/option/@value',
+		'postprocess_pages' => { 
+				'^' => 'http://www.mangapanda.com',
+		},
+		'image_xpath' => '//img[@id="img"]/@src',
+		'image_extension' => qr/\.([^\.]*)$/,
+		'split_pages' => 1,
+		'local_chapters' => qr/^[cv][0-9]+$/,
+		'grab_chapters' => {
+			'1' => qr/\/chapter-([0-9]+)\.html$/,
+			'2' => qr/\/([\.0-9]+)$/,
+		},
+		'reload_page_regexp' => qr/\/[0-9]+$/,
 	},
 );
 
@@ -49,14 +69,24 @@ sub get_chapters {
   $chapters{ join("/", @key) }{'url'} = $link;
   $chapters{ join("/", @key) }{'id'} = $id-- if $manga_host->{ 'chapters_order' };
   $chapters{ join("/", @key) }{'id'} = $id++ if !$manga_host->{ 'chapters_order' };
+  if( defined $manga_host->{ 'postprocess_chapters' } ) {
+   foreach ( keys %{$manga_host->{ 'postprocess_chapters' }} ) {
+    $chapters{ join("/", @key) }{'url'} =~ s/$_/$manga_host->{ 'postprocess_chapters' }->{$_}/;
+   }
+  }
  }
  return %chapters;
 }
 
 sub get_pages {
- my ($tree, $xpath, $split_pages) = @_;
- my @pages = $tree->findvalues ( $xpath );
- return @pages[0..$#pages/$split_pages];
+ my ($tree, $manga_host) = @_;
+ my @pages = $tree->findvalues ( $manga_host->{ 'pages_xpath' } );
+ if( defined $manga_host->{ 'postprocess_pages' } ) {
+   foreach my $r ( keys %{$manga_host->{ 'postprocess_pages' }} ) {
+    map { s/$r/$manga_host->{ 'postprocess_pages' }->{$r}/ } @pages;
+   }
+ }
+ return @pages[0..$#pages/$manga_host->{ 'split_pages' }];
 }
 
 sub get_image {
@@ -127,7 +157,7 @@ sub manga_exists {
 
 sub list_chapters {
  my ($chapters) = @_;
- foreach (sort keys %{$chapters}) {
+ foreach (sort { $chapters->{$a}->{'id'} <=> $chapters->{$b}->{'id'} } keys %{$chapters}) {
   say "(",$chapters->{$_}->{'id'},") ", $_, " => ", (defined ($chapters->{$_}->{'removed'}) ) ? 'Skip' : 'Download';
  }
 }
@@ -169,8 +199,6 @@ my $manga_url = $opt{m};
 
 my $manga_host = URI->new( qq(${manga_url}/) )->host;
 
-my ($manga) = $manga_url =~ $hosts{ $manga_host }{ 'manga_regex' };
-
 my $manga_tree = HTML::TreeBuilder::XPath->new_from_url( $manga_url );
 
 if( !manga_exists($manga_tree,$hosts{ $manga_host }{ 'exists_xpath' })) {
@@ -208,7 +236,6 @@ if (defined $opt{r}) {
  }
 }
 
-
 get_chapters_to_sync(\%chapters, \@local_chapters, \@range, defined $opt{'n'});
 
 if (defined $opt{l}) {
@@ -227,8 +254,7 @@ if ( not -d $chapter) {
  make_path($chapter);
 }
 
-my @pages = get_pages($chapter_tree, $hosts{ $manga_host }{ 'pages_xpath' }, $hosts{ $manga_host }{ 'split_pages' });
-;
+my @pages = get_pages($chapter_tree, $hosts{ $manga_host });
 
 while (my ($page, $page_url) = each @pages) {
  $chapter_tree= HTML::TreeBuilder::XPath->new_from_url( $page_url ) if $page_url =~ $hosts{ $manga_host }{ 'reload_page_regexp' };
