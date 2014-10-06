@@ -50,13 +50,54 @@ my %hosts = (
 		},
 		'reload_page_regexp' => qr/\/[0-9]+$/,
 	},
+	'www.goodmanga.net' =>  {
+		'exists_xpath' => '//img[@id="series_image"]/@src',
+		'chapters_xpath' => '//div[@id="chapters"]/ul/li/a/@href',
+		'chapters_order' => 1,
+		'pages_xpath' => '//div[@id="manga_nav_top"]/span/span[last()]',
+		'build_pages' => {
+			'where' => '$',
+			'pages' => qr/([0-9]+)$/,
+			'start' => 2,
+			'prepare' => {
+				'$' => '/'
+			},
+		},
+		'image_xpath' => '//div[@id="manga_viewer"]/a/img/@src',
+		'image_extension' => qr/\.([^\.]*)$/,
+		'split_pages' => 1,
+		'local_chapters' => qr/^[0-9]+$/,
+		'grab_chapters' => {
+			'1' => qr/\/([\.0-9]+)$/,
+		},
+		'post_find' => {},
+		'reload_page_regexp' => qr/chapter\/[0-9]+\/[0-9]+$/,
+		'chapters_pagination' => '//ul[@class="pagination"]/li/button/@href',
+	},
 );
 
-sub get_chapters {
+sub check_host {
+ my ($hosts,$host) = @_;
+ return defined($hosts->{ $host });
+}
+
+sub get_chapters_pagination {
  my ($tree,$manga_host) = @_;
- my @links = $tree->findvalues ( $manga_host->{ 'chapters_xpath' } );
+ my @pagination;
+ @pagination = $tree->findvalues ( $manga_host->{ 'chapters_pagination' } ) if defined $manga_host->{ 'chapters_pagination' };
+ return @pagination;
+}
+
+sub get_chapters {
+ my ($tree,$manga_host, @pagination) = @_;
  my %chapters = ();
+ my @links;
  my $id;
+ foreach my $page ( (undef,@pagination) ) {
+  $tree = HTML::TreeBuilder::XPath->new_from_url( $page ) if defined $page;
+  (@links) = (@links, $tree->findvalues ( $manga_host->{ 'chapters_xpath' } ));
+  $tree->delete;
+ }
  $id = @links if $manga_host->{ 'chapters_order' };
  $id = 1 if !$manga_host->{ 'chapters_order' };
  foreach my $link (@links) {
@@ -79,8 +120,17 @@ sub get_chapters {
 }
 
 sub get_pages {
- my ($tree, $manga_host) = @_;
- my @pages = $tree->findvalues ( $manga_host->{ 'pages_xpath' } );
+ my ($tree, $manga_host,$original_url) = @_;
+ my @pages;
+ @pages = $tree->findvalues ( $manga_host->{ 'pages_xpath' } );
+ if( defined $manga_host->{ 'build_pages' } ) {
+  if ( defined $manga_host->{ 'build_pages' }->{ 'prepare' } ) {
+   foreach (sort keys ( %{$manga_host->{ 'build_pages' }->{ 'prepare' }} )) {
+    $original_url =~ s/$_/$manga_host->{ 'build_pages' }->{ 'prepare' }->{$_}/;
+   }
+  }
+  @pages = ($original_url, map { my $url = $original_url; $url =~ s/$manga_host->{ 'build_pages' }->{ 'where' }/$_/; $url } ($manga_host->{ 'build_pages' }->{ 'start' }..do { (my $p) = $pages[0] =~ $manga_host->{ 'build_pages' }->{ 'pages' }; $p }));
+ }
  if( defined $manga_host->{ 'postprocess_pages' } ) {
    foreach my $r ( keys %{$manga_host->{ 'postprocess_pages' }} ) {
     map { s/$r/$manga_host->{ 'postprocess_pages' }->{$r}/ } @pages;
@@ -199,6 +249,11 @@ my $manga_url = $opt{m};
 
 my $manga_host = URI->new( qq(${manga_url}/) )->host;
 
+if ( !check_host(\%hosts, $manga_host) ) {
+ say "Host is not supported";
+ exit(1);
+}
+
 my $manga_tree = HTML::TreeBuilder::XPath->new_from_url( $manga_url );
 
 if( !manga_exists($manga_tree,$hosts{ $manga_host }{ 'exists_xpath' })) {
@@ -206,7 +261,9 @@ if( !manga_exists($manga_tree,$hosts{ $manga_host }{ 'exists_xpath' })) {
  exit(1);
 }
 
-my %chapters = get_chapters($manga_tree, $hosts{ $manga_host });
+my @pagination = get_chapters_pagination($manga_tree, $hosts{ $manga_host });
+
+my %chapters = get_chapters($manga_tree, $hosts{ $manga_host }, @pagination);
 
 my @local_chapters;
 if ( not defined $opt{'a'} ) {
@@ -254,7 +311,7 @@ if ( not -d $chapter) {
  make_path($chapter);
 }
 
-my @pages = get_pages($chapter_tree, $hosts{ $manga_host });
+my @pages = get_pages($chapter_tree, $hosts{ $manga_host }, $chapters{$chapter}{url});
 
 while (my ($page, $page_url) = each @pages) {
  $chapter_tree= HTML::TreeBuilder::XPath->new_from_url( $page_url ) if $page_url =~ $hosts{ $manga_host }{ 'reload_page_regexp' };
