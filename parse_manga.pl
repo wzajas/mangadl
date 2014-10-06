@@ -32,12 +32,12 @@ my %hosts = (
 	'www.mangapanda.com' =>  {
 		'exists_xpath' => '//div[@id="mangaproperties"]',
 		'chapters_xpath' => '//div[@id="chapterlist"]/table[@id="listing"]/tr/td/a/@href',
-		'postprocess_chapters' => { 
+		'postprocess_chapters' => {
 				'^' => 'http://www.mangapanda.com',
 		},
 		'chapters_order' => 0,
 		'pages_xpath' => '//select[@id="pageMenu"]/option/@value',
-		'postprocess_pages' => { 
+		'postprocess_pages' => {
 				'^' => 'http://www.mangapanda.com',
 		},
 		'image_xpath' => '//img[@id="img"]/@src',
@@ -48,6 +48,7 @@ my %hosts = (
 			'1' => qr/\/chapter-([0-9]+)\.html$/,
 			'2' => qr/\/([\.0-9]+)$/,
 		},
+		'post_find' => {},
 		'reload_page_regexp' => qr/\/[0-9]+$/,
 	},
 	'www.goodmanga.net' =>  {
