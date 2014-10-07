@@ -301,7 +301,7 @@ if (defined $opt{l}) {
  exit(0);
 }
 
-foreach my $chapter (sort keys(%chapters)) {
+foreach my $chapter (sort { $chapters{$a}{'id'} <=> $chapters{$b}{'id'} } keys(%chapters)) {
 
 next if defined $chapters{$chapter}{'removed'};
 
