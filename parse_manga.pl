@@ -64,7 +64,7 @@ my %hosts = (
 				'$' => '/'
 			},
 		},
-		'image_xpath' => '//div[@id="manga_viewer"]/a/img/@src',
+		'image_xpath' => '//div[@id="manga_viewer"]/descendant-or-self::img/@src',
 		'image_extension' => qr/\.([^\.]*)$/,
 		'split_pages' => 1,
 		'local_chapters' => qr/^[0-9]+$/,
