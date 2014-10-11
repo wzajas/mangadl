@@ -75,6 +75,22 @@ my %hosts = (
 		'reload_page_regexp' => qr/chapter\/[0-9]+\/[0-9]+$/,
 		'chapters_pagination' => '//ul[@class="pagination"]/li/button/@href',
 	},
+	'bato.to' =>  {
+		'exists_xpath' => '//div[@id="content"]/div[2]/div/h2[@class="maintitle"]',
+		'chapters_xpath' => '//table[contains(@class,"ipb_table") and contains(@class,"chapters_list")]/tbody/tr[contains(@class,"row") and contains(@class,"lang_English") and contains(@class,"chapter_row")]/td[1]/a/@href',
+		'chapters_order' => 1,
+		'pages_xpath' => '//select[@id="page_select"]/option/@value',
+		'image_xpath' => '//img[@id="comic_page"]/@src',
+		'image_extension' => qr/\.([^\.]*)$/,
+		'split_pages' => 2,
+		'local_chapters' => qr/^[chv]+[0-9v_]+$/,
+		'grab_chapters' => {
+			'1' => qr/_(v[0-9]+)_(ch[^_]+)_by_/,
+			'2' => qr/_(ch[^_]+)_by_/,
+		},
+		'post_find' => {},
+		'reload_page_regexp' => qr/\/[0-9]+$/,
+	},
 );
 
 sub check_host {
