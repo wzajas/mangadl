@@ -15,17 +15,13 @@ my %hosts = (
 		'exists_xpath' => '//span[@id="current_rating"]',
 		'chapters_xpath' => '//div[@class="detail_list"]/ul/li/span[@class="left"]/a[@class="color_0077"]/@href',
 		'chapters_order' => 1,
-		'pages_xpath' => '//div/span/select[@class="wid60"]/option/@value',
+		'pages_xpath' => '(//div/span/select[@class="wid60"])[last()]/option/@value',
 		'image_xpath' => '//img[@id="image"]/@src',
 		'image_extension' => qr/\.([^\.]*)\?v=[0-9]+$/,
-		'split_pages' => 2,
 		'local_chapters' => qr/^[cv][0-9]+$/,
 		'grab_chapters' => {
 			'1' => qr/\/(v[0-9]+)\/(c[\.0-9]+)\/$/,
 			'2' => qr/\/(c[\.0-9]+)\/$/,
-		},
-		'post_find' => {
-			'1' => qr/^v[0-9]+$/,
 		},
 		'reload_page_regexp' => qr/html$/,
 	},
@@ -42,13 +38,11 @@ my %hosts = (
 		},
 		'image_xpath' => '//img[@id="img"]/@src',
 		'image_extension' => qr/\.([^\.]*)$/,
-		'split_pages' => 1,
-		'local_chapters' => qr/^[cv][0-9]+$/,
+		'local_chapters' => qr/^[0-9]+$/,
 		'grab_chapters' => {
 			'1' => qr/\/chapter-([0-9]+)\.html$/,
 			'2' => qr/\/([\.0-9]+)$/,
 		},
-		'post_find' => {},
 		'reload_page_regexp' => qr/\/[0-9]+$/,
 	},
 	'www.goodmanga.net' =>  {
@@ -66,12 +60,10 @@ my %hosts = (
 		},
 		'image_xpath' => '//div[@id="manga_viewer"]/descendant-or-self::img/@src',
 		'image_extension' => qr/\.([^\.]*)$/,
-		'split_pages' => 1,
 		'local_chapters' => qr/^[0-9]+$/,
 		'grab_chapters' => {
 			'1' => qr/\/([\.0-9]+)$/,
 		},
-		'post_find' => {},
 		'reload_page_regexp' => qr/chapter\/[0-9]+\/[0-9]+$/,
 		'chapters_pagination' => '//ul[@class="pagination"]/li/button/@href',
 		'chapters_pagination_hidden' => 1,
@@ -80,16 +72,14 @@ my %hosts = (
 		'exists_xpath' => '//div[@id="content"]/div[2]/div/h2[@class="maintitle"]',
 		'chapters_xpath' => '//table[contains(@class,"ipb_table") and contains(@class,"chapters_list")]/tbody/tr[contains(@class,"row") and contains(@class,"lang_English") and contains(@class,"chapter_row")]/td[1]/a/@href',
 		'chapters_order' => 1,
-		'pages_xpath' => '//select[@id="page_select"]/option/@value',
+		'pages_xpath' => '(//select[@id="page_select"])[last()]/option/@value',
 		'image_xpath' => '//img[@id="comic_page"]/@src',
 		'image_extension' => qr/\.([^\.]*)$/,
-		'split_pages' => 2,
 		'local_chapters' => qr/^[chv]+[0-9v_]+$/,
 		'grab_chapters' => {
 			'1' => qr/_(v[0-9]+)_(ch[^_]+)_by_/,
 			'2' => qr/_(ch[^_]+)_by_/,
 		},
-		'post_find' => {},
 		'reload_page_regexp' => qr/\/[0-9]+$/,
 	},
 );
@@ -195,7 +185,7 @@ sub get_pages {
     map { s/$r/$manga_host->{ 'postprocess_pages' }->{$r}/ } @pages;
    }
  }
- return @pages[0..$#pages/$manga_host->{ 'split_pages' }];
+ return @pages[0..$#pages];
 }
 
 sub get_image {
@@ -241,11 +231,6 @@ sub get_chapters_to_sync {
 sub find_chapter_directories {
  my ($host) = @_;
  my @chapter_directories = File::Find::Rule->directory()->name( $host->{'local_chapters'} )->in(".");
- foreach my $remove ($host->{ 'post_find' }) {
-  while (my ($index, $directory) = each @chapter_directories) {
-   splice(@chapter_directories,$index,1) if $directory =~ $remove;
-  }
- }
  return @chapter_directories;
 }
 
@@ -266,7 +251,7 @@ sub list_chapters {
 
 sub print_help {
  say "";
- say "Download mangas from mangahere.co";
+ say "Download mangas from various manga sites.";
  say "";
  say " -h this help message";
  say " -m <manga_url> ie. http://www.mangahere.co/manga/<manga_title>/";
@@ -275,6 +260,7 @@ sub print_help {
  say " -n catch only the newest chapters (only if you have already downloaded something)";
  say " -u '<user-agent>' define user-agent string (some hosts block lwp default)";
  say "";
+ say "Example: ".$0." -m http://www.your-manga-host/manga/";
 }
 
 my %opt=();
@@ -382,7 +368,7 @@ while (my ($page, $page_url) = each @pages) {
  my $pages = @pages;
  my $res = get_image($chapter_tree,$hosts{ $manga_host },$chapter,$page,$pages);
  if(!$res || !$res->is_success) {
-  say "Error chapter ", join(" ", $chapter, "page", $page, "/", $pages, "url:", $page_url);
+  say "Error chapter ", join(" ", $chapter, "page", $page, "/", $pages, "url:", $page_url, $res->status_line);
  } else {
   say "Got chapter ", join(" ", $chapter, "page", $page, "/", $pages);
  }
