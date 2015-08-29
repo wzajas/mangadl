@@ -2,13 +2,13 @@
 use strict;
 use Data::Dumper;
 use warnings;
-use WWW::Mechanize;
 use feature qw(say);
 use File::Find::Rule;
 use Getopt::Std;
 use HTML::TreeBuilder::XPath;
 use File::Path qw(make_path);
 use URI;
+use LWP::UserAgent;
 
 my %hosts = (
 	'www.mangahere.co' =>  {
@@ -74,6 +74,7 @@ my %hosts = (
 		'post_find' => {},
 		'reload_page_regexp' => qr/chapter\/[0-9]+\/[0-9]+$/,
 		'chapters_pagination' => '//ul[@class="pagination"]/li/button/@href',
+		'chapters_pagination_hidden' => 1,
 	},
 	'bato.to' =>  {
 		'exists_xpath' => '//div[@id="content"]/div[2]/div/h2[@class="maintitle"]',
@@ -93,15 +94,51 @@ my %hosts = (
 	},
 );
 
+my $useragent = LWP::UserAgent->new->agent();
+
+sub get_html_content {
+ my ($url, $function) = @_;
+ my $lwp_response = LWP::UserAgent->new(agent => $useragent)->get( $url );
+
+ if ( !$lwp_response->is_success )
+ {
+  print "Get failed: ".$lwp_response->status_line." in ".$function."\n";
+  exit 1;
+ }
+ return $lwp_response->decoded_content;
+}
+
 sub check_host {
  my ($hosts,$host) = @_;
  return defined($hosts->{ $host });
 }
 
 sub get_chapters_pagination {
- my ($tree,$manga_host) = @_;
+ my ($tree,$manga_host,$visited_pages) = @_;
  my @pagination;
+ #Get first page
  @pagination = $tree->findvalues ( $manga_host->{ 'chapters_pagination' } ) if defined $manga_host->{ 'chapters_pagination' };
+ #Next visit all pagination pages if we have to.
+ if ( defined ($manga_host->{ 'chapters_pagination_hidden' }) ) {
+  if ( not defined $visited_pages ) {
+   $visited_pages = {};
+  }
+
+  foreach ( @pagination ) {
+   if ( not defined $visited_pages->{$_} ) {
+    $visited_pages->{$_}=1;
+    my $tree = HTML::TreeBuilder::XPath->new;
+    $tree->parse( get_html_content($_, "get_chapter_pagination") );
+    $tree->eof;
+    #Get unique pages
+    @pagination = do {
+     my %seen; grep { !$seen{$_}++ }
+     (@pagination , get_chapters_pagination( $tree, $manga_host, $visited_pages ))
+    };
+   }
+  }
+
+ }
  return @pagination;
 }
 
@@ -110,8 +147,13 @@ sub get_chapters {
  my %chapters = ();
  my @links;
  my $id;
+ #undef is for page we are on right now.
  foreach my $page ( (undef,@pagination) ) {
-  $tree = HTML::TreeBuilder::XPath->new_from_url( $page ) if defined $page;
+  if( defined $page ) {
+   $tree = HTML::TreeBuilder::XPath->new;
+   $tree->parse( get_html_content( $page, "get_chapters") );
+   $tree->eof;
+  }
   (@links) = (@links, $tree->findvalues ( $manga_host->{ 'chapters_xpath' } ));
   $tree->delete;
  }
@@ -158,23 +200,16 @@ sub get_pages {
 
 sub get_image {
  my ($chapter_tree,$manga_host,$directory,$page,$pages) = @_;
- my $image = $chapter_tree->findvalue ( $manga_host->{ 'image_xpath' } ) ;
- if ($image) {
-  my ($extension) = $image =~ $manga_host->{ 'image_extension' };
+ my $image_url = $chapter_tree->findvalue ( $manga_host->{ 'image_xpath' } ) ;
+ if ($image_url) {
+  my ($extension) = $image_url =~ $manga_host->{ 'image_extension' };
   my $zerofill = length($pages);
   my $imgname = sprintf("%0${zerofill}d.%s",$page,$extension);
-  my $mech = WWW::Mechanize->new();
-  my $res = $mech->get($image, ':content_file' => $directory.'/'.$imgname);
-  return $res;
+  my $ua = LWP::UserAgent->new(agent => $useragent);
+  return $ua->get($image_url, ':content_file' => $directory.'/'.$imgname);
  } else {
   return undef;
  }
-}
-
-sub move_to_removed {
- my ($chapters, $deleted_chapters, $key) = @_;
- $deleted_chapters->{$key} = $chapters->{$key};
- delete $chapters->{$key};
 }
 
 sub get_chapters_to_sync {
@@ -238,11 +273,12 @@ sub print_help {
  say " -r <range> chapter range eg. 1 or 1-3";
  say " -l list what would be downloaded";
  say " -n catch only the newest chapters (only if you have already downloaded something)";
+ say " -u '<user-agent>' define user-agent string (some hosts block lwp default)";
  say "";
 }
 
 my %opt=();
-getopts("m:r:nlah", \%opt) or die "Please use -h for help.";
+getopts("m:r:u:nlah", \%opt) or die "Please use -h for help.";
 
 my @conflict_opts = ( [ 'r', 'n' ], [ 'a', 'n' ]);
 foreach my $conflicts (@conflict_opts) {
@@ -252,14 +288,13 @@ foreach my $conflicts (@conflict_opts) {
  }
 }
 
-if ( defined $opt{h}) {
+if ( not defined $opt{m} or defined $opt{h}) {
  print_help();
  exit(0);
 }
 
-if (not defined $opt{m}) {
- say "Specify manga with -m <manga_url>";
- exit(1);
+if ( defined $opt{u} ) {
+ $useragent=$opt{u};
 }
 
 my $manga_url = $opt{m};
@@ -271,7 +306,12 @@ if ( !check_host(\%hosts, $manga_host) ) {
  exit(1);
 }
 
-my $manga_tree = HTML::TreeBuilder::XPath->new_from_url( $manga_url );
+my $manga_page_content = get_html_content( $manga_url, 'main' );
+
+my $manga_tree = HTML::TreeBuilder::XPath->new;
+
+$manga_tree->parse($manga_page_content);
+$manga_tree->eof;
 
 if( !manga_exists($manga_tree,$hosts{ $manga_host }{ 'exists_xpath' })) {
  say "Manga doesn't exists";
@@ -321,7 +361,9 @@ foreach my $chapter (sort { $chapters{$a}{'id'} <=> $chapters{$b}{'id'} } keys(%
 
 next if defined $chapters{$chapter}{'removed'};
 
-my $chapter_tree= HTML::TreeBuilder::XPath->new_from_url( $chapters{$chapter}{url} );
+my $chapter_tree= HTML::TreeBuilder::XPath->new;
+$chapter_tree->parse( get_html_content( $chapters{$chapter}{url}, "main_chapter_tree") );
+$chapter_tree->eof;
 say $chapters{$chapter}{url};
 
 if ( not -d $chapter) {
@@ -331,14 +373,18 @@ if ( not -d $chapter) {
 my @pages = get_pages($chapter_tree, $hosts{ $manga_host }, $chapters{$chapter}{url});
 
 while (my ($page, $page_url) = each @pages) {
- $chapter_tree= HTML::TreeBuilder::XPath->new_from_url( $page_url ) if $page_url =~ $hosts{ $manga_host }{ 'reload_page_regexp' };
+ if ( $page_url =~ $hosts{ $manga_host }{ 'reload_page_regexp' } ) {
+  $chapter_tree = HTML::TreeBuilder::XPath->new;
+  $chapter_tree->parse( get_html_content( $page_url, "main_pages") );
+  $chapter_tree->eof;
+ }
  $page++;
  my $pages = @pages;
  my $res = get_image($chapter_tree,$hosts{ $manga_host },$chapter,$page,$pages);
  if(!$res || !$res->is_success) {
-  say "Error chapter ", join(" ", $chapter, $page, "/", $pages, "url:", $page_url);
+  say "Error chapter ", join(" ", $chapter, "page", $page, "/", $pages, "url:", $page_url);
  } else {
-  say "Got chapter ", join(" ", $chapter, $page, "/", $pages);
+  say "Got chapter ", join(" ", $chapter, "page", $page, "/", $pages);
  }
  $chapter_tree->delete;
 }
