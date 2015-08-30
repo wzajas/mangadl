@@ -261,6 +261,8 @@ sub print_help {
  say " -u '<user-agent>' define user-agent string (some hosts block lwp default)";
  say "";
  say "Example: ".$0." -m http://www.your-manga-host/manga/";
+ say "Script saves url on first download to .mangadl, so you don't have to type it again.";
+ say "";
 }
 
 my %opt=();
@@ -274,16 +276,39 @@ foreach my $conflicts (@conflict_opts) {
  }
 }
 
-if ( not defined $opt{m} or defined $opt{h}) {
+if ( defined $opt{h} ) {
  print_help();
  exit(0);
+}
+
+my $manga_url;
+my $manga_url_dot_file;
+
+if ( -f ".mangadl" ) {
+ open(my $info_file, '<', ".mangadl") or die "Couldn't read .mangadl file";
+ $manga_url_dot_file = <$info_file>;
+ close($info_file);
+}
+
+if ( not defined $opt{m} ) {
+  if ( not defined $manga_url_dot_file ) {
+   print_help();
+   exit(1);
+  } else {
+   $manga_url = $manga_url_dot_file;
+  }
+} else {
+ $manga_url = $opt{m};
+ if ( defined $manga_url_dot_file
+  and ( $manga_url_dot_file ne $manga_url ) ) {
+  say STDERR "Provided -m url and .mangadl url are different!";
+  exit(1);
+ }
 }
 
 if ( defined $opt{u} ) {
  $useragent=$opt{u};
 }
-
-my $manga_url = $opt{m};
 
 my $manga_host = URI->new( qq(${manga_url}/) )->host;
 
@@ -302,6 +327,15 @@ $manga_tree->eof;
 if( !manga_exists($manga_tree,$hosts{ $manga_host }{ 'exists_xpath' })) {
  say "Manga doesn't exists";
  exit(1);
+}
+else {
+ #Don't create file during listing
+ #or when file already exists
+ unless ( defined $opt{l} or -f ".mangadl" ) {
+  open(my $info_file, '>', ".mangadl") or die "Couldn't write .mangadl file";
+  print $info_file $manga_url;
+  close($info_file);
+ }
 }
 
 my @pagination = get_chapters_pagination($manga_tree, $hosts{ $manga_host });
