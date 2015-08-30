@@ -8,7 +8,11 @@ use Getopt::Std;
 use HTML::TreeBuilder::XPath;
 use File::Path qw(make_path);
 use URI;
+#use IO::Socket 1.31;
+#use IO::Socket 1.38;
 use LWP::UserAgent;
+use threads;
+use Thread::Queue;
 
 my %hosts = (
 	'www.mangahere.co' =>  {
@@ -84,13 +88,64 @@ my %hosts = (
 	},
 );
 
-my $useragent = LWP::UserAgent->new->agent();
+#Queue for chapters
+my $queue = Thread::Queue->new();
+
+my $thread_limit = 4;
+
+my $lwp_lock :shared;
+
+my $useragent :shared = LWP::UserAgent->new->agent();;
+
+my @thr = map {
+ threads->create(
+ sub {
+  # Thread will loop until no more work
+  while (defined(my $chapter = $queue->dequeue)) {
+   download_chapter($chapter->{url}, $chapter->{chapter}, $chapter->{manga_host});
+  }
+ });
+} 1..$thread_limit;
+
+sub download_chapter {
+ my ($chapter_url, $chapter, $manga_host) = @_;
+
+ my $chapter_tree = HTML::TreeBuilder::XPath->new;
+ $chapter_tree->parse( get_html_content( $chapter_url, "main_chapter_tree") );
+ $chapter_tree->eof;
+ say $chapter_url;
+
+ if ( not -d $chapter) {
+  make_path($chapter);
+ }
+
+ my @pages = get_pages($chapter_tree, $hosts{ $manga_host }, $chapter_url);
+
+ while (my ($page, $page_url) = each @pages) {
+  if ( $page_url =~ $hosts{ $manga_host }{ 'reload_page_regexp' } ) {
+   $chapter_tree = HTML::TreeBuilder::XPath->new;
+   $chapter_tree->parse( get_html_content( $page_url, "main_pages") );
+   $chapter_tree->eof;
+  }
+  $page++;
+  my $pages = @pages;
+  my $res = get_image($chapter_tree,$hosts{ $manga_host },$chapter,$page,$pages);
+  if(!$res || !$res->is_success) {
+   say "Error chapter ", join(" ", $chapter, "page", $page, "/", $pages, "url:", $page_url, $res->status_line);
+  } else {
+   say "Got chapter ", join(" ", $chapter, "page", $page, "/", $pages);
+  }
+  $chapter_tree->delete;
+ }
+
+}
 
 sub get_html_content {
  my ($url, $function) = @_;
+ lock($lwp_lock);
  my $lwp_response = LWP::UserAgent->new(agent => $useragent)->get( $url );
 
- if ( !$lwp_response->is_success )
+ if ( $lwp_response->is_error )
  {
   print "Get failed: ".$lwp_response->status_line." in ".$function."\n";
   exit 1;
@@ -374,39 +429,20 @@ get_chapters_to_sync(\%chapters, \@local_chapters, \@range, defined $opt{'n'});
 
 if (defined $opt{l}) {
  list_chapters(\%chapters);
- exit(0);
+ undef(%chapters);
 }
 
 foreach my $chapter (sort { $chapters{$a}{'id'} <=> $chapters{$b}{'id'} } keys(%chapters)) {
 
-next if defined $chapters{$chapter}{'removed'};
+ next if defined $chapters{$chapter}{'removed'};
 
-my $chapter_tree= HTML::TreeBuilder::XPath->new;
-$chapter_tree->parse( get_html_content( $chapters{$chapter}{url}, "main_chapter_tree") );
-$chapter_tree->eof;
-say $chapters{$chapter}{url};
-
-if ( not -d $chapter) {
- make_path($chapter);
-}
-
-my @pages = get_pages($chapter_tree, $hosts{ $manga_host }, $chapters{$chapter}{url});
-
-while (my ($page, $page_url) = each @pages) {
- if ( $page_url =~ $hosts{ $manga_host }{ 'reload_page_regexp' } ) {
-  $chapter_tree = HTML::TreeBuilder::XPath->new;
-  $chapter_tree->parse( get_html_content( $page_url, "main_pages") );
-  $chapter_tree->eof;
- }
- $page++;
- my $pages = @pages;
- my $res = get_image($chapter_tree,$hosts{ $manga_host },$chapter,$page,$pages);
- if(!$res || !$res->is_success) {
-  say "Error chapter ", join(" ", $chapter, "page", $page, "/", $pages, "url:", $page_url, $res->status_line);
- } else {
-  say "Got chapter ", join(" ", $chapter, "page", $page, "/", $pages);
- }
- $chapter_tree->delete;
-}
+ #my %tmp_hash = ( url => $chapters{$chapter}{url}, chapter => $chapter, manga_host => $manga_host );
+ #$queue->enqueue( \%tmp_hash );
+ $queue->enqueue( { url => $chapters{$chapter}{url}, chapter => $chapter, manga_host => $manga_host } );
 
 }
+
+# Signal that there is no more work to be sent
+$queue->end();
+# Join up with the thread when it finishes
+$_->join() for @thr;
