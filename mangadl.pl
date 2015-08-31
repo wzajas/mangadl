@@ -8,8 +8,6 @@ use Getopt::Std;
 use HTML::TreeBuilder::XPath;
 use File::Path qw(make_path);
 use URI;
-#use IO::Socket 1.31;
-#use IO::Socket 1.38;
 use LWP::UserAgent;
 use threads;
 use Thread::Queue;
@@ -91,21 +89,7 @@ my %hosts = (
 #Queue for chapters
 my $queue = Thread::Queue->new();
 
-my $thread_limit = 4;
-
-my $lwp_lock :shared;
-
 my $useragent :shared = LWP::UserAgent->new->agent();;
-
-my @thr = map {
- threads->create(
- sub {
-  # Thread will loop until no more work
-  while (defined(my $chapter = $queue->dequeue)) {
-   download_chapter($chapter->{url}, $chapter->{chapter}, $chapter->{manga_host});
-  }
- });
-} 1..$thread_limit;
 
 sub download_chapter {
  my ($chapter_url, $chapter, $manga_host) = @_;
@@ -142,12 +126,11 @@ sub download_chapter {
 
 sub get_html_content {
  my ($url, $function) = @_;
- lock($lwp_lock);
  my $lwp_response = LWP::UserAgent->new(agent => $useragent)->get( $url );
 
  if ( $lwp_response->is_error )
  {
-  print "Get failed: ".$lwp_response->status_line." in ".$function."\n";
+  say "Get failed: ".$lwp_response->status_line." in ".$function."\n";
   exit 1;
  }
  return $lwp_response->decoded_content;
@@ -314,6 +297,7 @@ sub print_help {
  say " -l list what would be downloaded";
  say " -n catch only the newest chapters (only if you have already downloaded something)";
  say " -u '<user-agent>' define user-agent string (some hosts block lwp default)";
+ say " -t <int> number of threads";
  say "";
  say "Example: ".$0." -m http://www.your-manga-host/manga/";
  say "Script saves url on first download to .mangadl, so you don't have to type it again.";
@@ -321,7 +305,7 @@ sub print_help {
 }
 
 my %opt=();
-getopts("m:r:u:nlah", \%opt) or die "Please use -h for help.";
+getopts("m:r:u:t:nlah", \%opt) or die "Please use -h for help.";
 
 my @conflict_opts = ( [ 'r', 'n' ], [ 'a', 'n' ]);
 foreach my $conflicts (@conflict_opts) {
@@ -365,6 +349,17 @@ if ( defined $opt{u} ) {
  $useragent=$opt{u};
 }
 
+my $thread_limit = 2;
+
+if (defined $opt{t}) {
+ if($opt{t} =~ /^[1-9]+$/) {
+  $thread_limit = $opt{t};
+ } else {
+  say "Thread number is invalid";
+  exit(1);
+ }
+}
+
 my $manga_host = URI->new( qq(${manga_url}/) )->host;
 
 if ( !check_host(\%hosts, $manga_host) ) {
@@ -388,7 +383,7 @@ else {
  #or when file already exists
  unless ( defined $opt{l} or -f ".mangadl" ) {
   open(my $info_file, '>', ".mangadl") or die "Couldn't write .mangadl file";
-  print $info_file $manga_url;
+  say $info_file $manga_url;
   close($info_file);
  }
 }
@@ -432,12 +427,20 @@ if (defined $opt{l}) {
  undef(%chapters);
 }
 
+my @thr = map {
+ threads->create(
+ sub {
+  # Thread will loop until no more work
+  while (defined(my $chapter = $queue->dequeue)) {
+   download_chapter($chapter->{url}, $chapter->{chapter}, $chapter->{manga_host});
+  }
+ });
+} 1..$thread_limit;
+
 foreach my $chapter (sort { $chapters{$a}{'id'} <=> $chapters{$b}{'id'} } keys(%chapters)) {
 
  next if defined $chapters{$chapter}{'removed'};
 
- #my %tmp_hash = ( url => $chapters{$chapter}{url}, chapter => $chapter, manga_host => $manga_host );
- #$queue->enqueue( \%tmp_hash );
  $queue->enqueue( { url => $chapters{$chapter}{url}, chapter => $chapter, manga_host => $manga_host } );
 
 }
