@@ -95,9 +95,9 @@ sub download_chapter {
  my ($chapter_url, $chapter, $manga_host) = @_;
 
  my $chapter_tree = HTML::TreeBuilder::XPath->new;
- $chapter_tree->parse( get_html_content( $chapter_url, "main_chapter_tree") );
+ $chapter_tree->parse( get_html_content( $chapter_url, "download_chapter_tree") );
  $chapter_tree->eof;
- say $chapter_url;
+ say "Starting ".$chapter." from: ".$chapter_url;
 
  if ( not -d $chapter) {
   make_path($chapter);
@@ -108,7 +108,7 @@ sub download_chapter {
  while (my ($page, $page_url) = each @pages) {
   if ( $page_url =~ $hosts{ $manga_host }{ 'reload_page_regexp' } ) {
    $chapter_tree = HTML::TreeBuilder::XPath->new;
-   $chapter_tree->parse( get_html_content( $page_url, "main_pages") );
+   $chapter_tree->parse( get_html_content( $page_url, "download_chapter_pages") );
    $chapter_tree->eof;
   }
   $page++;
@@ -447,5 +447,5 @@ foreach my $chapter (sort { $chapters{$a}{'id'} <=> $chapters{$b}{'id'} } keys(%
 
 # Signal that there is no more work to be sent
 $queue->end();
-# Join up with the thread when it finishes
+# Join up with the threads
 $_->join() for @thr;
