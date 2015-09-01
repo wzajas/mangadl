@@ -404,8 +404,8 @@ if ( defined $opt{'n'} and @local_chapters and not defined $chapters{ ((sort @lo
 
 my @range=();
 if (defined $opt{r}) {
- if($opt{r} =~ /^[\.0-9]+(-[\.0-9]+)??$/) {
-  (@range) = grep defined && /^[\.0-9]+$/, $opt{r} =~ /^([\.0-9]+)(-([\.0-9]+))??$/;
+ if($opt{r} =~ /^[0-9]+(-[0-9]+)??$/) {
+  (@range) = grep defined && /^[0-9]+$/, $opt{r} =~ /^([0-9]+)(-([0-9]+))??$/;
   $range[1]=$range[0] if not defined $range[1];
   foreach (@range) {
    if ( $_ > scalar keys(%chapters) ) {
