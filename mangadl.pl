@@ -9,6 +9,10 @@ use HTML::TreeBuilder::XPath;
 use File::Path qw(make_path);
 use URI;
 use LWP::UserAgent;
+use threads;
+use Thread::Queue;
+use File::Basename;
+use File::Spec::Functions;
 
 my %hosts = (
 	'www.mangahere.co' =>  {
@@ -84,18 +88,94 @@ my %hosts = (
 	},
 );
 
-my $useragent = LWP::UserAgent->new->agent();
+#Queue for chapters
+my $queue = Thread::Queue->new();
+
+my $useragent :shared = LWP::UserAgent->new->agent();;
+
+#Thread pool
+my @thr;
+
+#Number of tries for each download
+my $try_repeat :shared = 2;
+
+sub download_chapter {
+ my ($chapter_url, $chapter, $manga_host, $dir_name) = @_;
+
+ my $directory = canonpath($dir_name."/".$chapter);
+
+ say "Downloading ".$chapter_url." as ".canonpath($directory);
+ my $chapter_tree = HTML::TreeBuilder::XPath->new;
+ my $content = get_html_content($chapter_url);
+ if ( $content->is_error ) {
+  say "Couldn't download first page of ".$chapter.", skipping...";
+  return 1;
+ }
+ $chapter_tree->parse( $content->decoded_content );
+ $chapter_tree->eof;
+
+ if ( not -d $directory) {
+  make_path($directory);
+ }
+
+ #Directory is created, files being downloaded
+ #Mark directory as incomplete, then remove that mark
+ #if no errors are encountered.
+ open(my $incomplete_file, '>', canonpath($directory."/.mangadl_incomplete")) or say "Couldn't open .mangadl_incomplete file for ".canonpath($directory);
+ close($incomplete_file);
+
+ my $problem=0;
+
+ my @pages = get_pages($chapter_tree, $hosts{ $manga_host }, $chapter_url);
+
+ PAGES_LOOP: while (my ($page, $page_url) = each @pages) {
+  if ( $page_url =~ $hosts{ $manga_host }{ 'reload_page_regexp' } ) {
+   $chapter_tree = HTML::TreeBuilder::XPath->new;
+   my $content = get_html_content( $page_url );
+   if ( $content->is_error ) {
+    say "Couldn't download page ".$page." from ".$page_url.", skipping...";
+    $problem=1;
+    next PAGES_LOOP;
+   }
+   $chapter_tree->parse( $content->decoded_content );
+   $chapter_tree->eof;
+  }
+  $page++;
+  my $pages = @pages;
+  my $res = get_image($chapter_tree,$hosts{ $manga_host },$directory,$page, $pages);
+  if( ref($res) eq "HTTP::Response" ) {
+   if( $res->is_success ) {
+    say "Got chapter ", join(" ", $chapter, "page", $page, "/", $pages, "(", $directory, ")");
+   } else {
+    say "Error chapter ", join(" ", $chapter, "page", $page, "/", $pages, "(", $directory, ")", "url:", $page_url, $res->status_line);
+    $problem=1;
+   }
+  } elsif ( $res == 1 ) {
+    say "Error chapter couldn't find image on ", join(" ", $chapter, "page", $page, "/", $pages, "(", $directory, ")", "url:", $page_url);
+    $problem=1;
+  } else {
+    say "Page already downloaded skipping ", join(" ", $chapter, "page", $page, "/", $pages, "(", $directory, ")", "url:", $page_url);
+  }
+  $chapter_tree->delete;
+ }
+
+ if ( !$problem ) {
+  if ( -f canonpath($directory."/.mangadl_incomplete") ) {
+   unlink(canonpath($directory."/.mangadl_incomplete")) or say "Couldn't delete .mangadl_incomplete file for ".$directory;
+  }
+ }
+
+}
 
 sub get_html_content {
- my ($url, $function) = @_;
- my $lwp_response = LWP::UserAgent->new(agent => $useragent)->get( $url );
-
- if ( !$lwp_response->is_success )
- {
-  print "Get failed: ".$lwp_response->status_line." in ".$function."\n";
-  exit 1;
- }
- return $lwp_response->decoded_content;
+ my ($url) = @_;
+ my $lwp_response;
+ my $i=0;
+ do {
+  $lwp_response = LWP::UserAgent->new(agent => $useragent)->get( $url );
+  $i++;
+ } while( $lwp_response->is_error and $i<$try_repeat);
+ return $lwp_response;
 }
 
 sub check_host {
@@ -114,11 +194,16 @@ sub get_chapters_pagination {
    $visited_pages = {};
   }
 
-  foreach ( @pagination ) {
+  PAGINATION: foreach ( @pagination ) {
    if ( not defined $visited_pages->{$_} ) {
     $visited_pages->{$_}=1;
     my $tree = HTML::TreeBuilder::XPath->new;
-    $tree->parse( get_html_content($_, "get_chapter_pagination") );
+    my $content = get_html_content($_);
+    if ( $content->is_error ) {
+     say "Couldn't download pagination from: ".$_.", chapter list will be incomplete";
+     next PAGINATION;
+    }
+    $tree->parse( $content->decoded_content );
     $tree->eof;
     #Get unique pages
     @pagination = do {
@@ -141,7 +226,12 @@ sub get_chapters {
  foreach my $page ( (undef,@pagination) ) {
   if( defined $page ) {
    $tree = HTML::TreeBuilder::XPath->new;
-   $tree->parse( get_html_content( $page, "get_chapters") );
+   my $content = get_html_content( $page );
+   if ( $content->is_error ) {
+    say "Couldn't get chapters from page: ".$page;
+    next;
+   }
+   $tree->parse( $content->decoded_content );
    $tree->eof;
   }
   (@links) = (@links, $tree->findvalues ( $manga_host->{ 'chapters_xpath' } ));
@@ -189,16 +279,20 @@ sub get_pages {
 }
 
 sub get_image {
- my ($chapter_tree,$manga_host,$directory,$page,$pages) = @_;
+ my ($chapter_tree,$manga_host,$directory,$page,$pages,$dir_name) = @_;
  my $image_url = $chapter_tree->findvalue ( $manga_host->{ 'image_xpath' } ) ;
  if ($image_url) {
   my ($extension) = $image_url =~ $manga_host->{ 'image_extension' };
   my $zerofill = length($pages);
   my $imgname = sprintf("%0${zerofill}d.%s",$page,$extension);
-  my $ua = LWP::UserAgent->new(agent => $useragent);
-  return $ua->get($image_url, ':content_file' => $directory.'/'.$imgname);
+  if ( ! -f canonpath($directory.'/'.$imgname) ) {
+   my $ua = LWP::UserAgent->new(agent => $useragent);
+   return $ua->get($image_url, ':content_file' => canonpath($directory.'/'.$imgname));
+  } else {
+   return 2;
+  }
  } else {
-  return undef;
+  return 1;
  }
 }
 
@@ -229,8 +323,14 @@ sub get_chapters_to_sync {
 }
 
 sub find_chapter_directories {
- my ($host) = @_;
- my @chapter_directories = File::Find::Rule->directory()->name( $host->{'local_chapters'} )->in(".");
+ my ($host, $local_directory) = @_;
+ my @chapter_directories = File::Find::Rule->directory()->name( $host->{'local_chapters'} )->relative()->in($local_directory);
+ my @incomplete_files = File::Find::Rule->file()->name( '.mangadl_incomplete' )->relative()->in($local_directory);
+ foreach my $incomplete (@incomplete_files) {
+  my $i=0;
+  $i++ until $chapter_directories[$i] eq dirname($incomplete) or $i > scalar @chapter_directories;
+  splice(@chapter_directories, $i, 1);
+ }
  return @chapter_directories;
 }
 
@@ -259,6 +359,7 @@ sub print_help {
  say " -l list what would be downloaded";
  say " -n catch only the newest chapters (only if you have already downloaded something)";
  say " -u '<user-agent>' define user-agent string (some hosts block lwp default)";
+ say " -t <int> number of threads";
  say "";
  say "Example: ".$0." -m http://www.your-manga-host/manga/";
  say "Script saves url on first download to .mangadl, so you don't have to type it again.";
@@ -266,9 +367,9 @@ sub print_help {
 }
 
 my %opt=();
-getopts("m:r:u:nlah", \%opt) or die "Please use -h for help.";
+getopts("m:r:u:t:Rnlah", \%opt) or die "Please use -h for help.";
 
-my @conflict_opts = ( [ 'r', 'n' ], [ 'a', 'n' ]);
+my @conflict_opts = ( [ 'r', 'n' ], [ 'a', 'n' ], [ 'R', 'm' ]);
 foreach my $conflicts (@conflict_opts) {
  if ( ( grep { exists $opt{$_} } @$conflicts ) > 1 ) {
   say "Select one of ", join(",",@$conflicts);
@@ -281,28 +382,36 @@ if ( defined $opt{h} ) {
  exit(0);
 }
 
-my $manga_url;
-my $manga_url_dot_file;
+my %manga_urls;
 
-if ( -f ".mangadl" ) {
+if ( not defined($opt{R}) and -f ".mangadl" ) {
  open(my $info_file, '<', ".mangadl") or die "Couldn't read .mangadl file";
- $manga_url_dot_file = <$info_file>;
+ #Can't do it other way around because same urls can be in different dirs.
+ $manga_urls{ '.' } = <$info_file>;
  close($info_file);
 }
 
-if ( not defined $opt{m} ) {
-  if ( not defined $manga_url_dot_file ) {
-   print_help();
+if ( not defined $opt{R} ) {
+ if ( not defined $opt{m} ) {
+   if ( not defined $manga_urls{ '.' } ) {
+    print_help();
+    exit(1);
+   }
+ } else {
+  if ( defined $manga_urls{ '.' }
+   and ( $manga_urls{ '.' } ne $opt{m} ) ) {
+   say STDERR "Provided -m url and .mangadl url are different!";
    exit(1);
-  } else {
-   $manga_url = $manga_url_dot_file;
   }
-} else {
- $manga_url = $opt{m};
- if ( defined $manga_url_dot_file
-  and ( $manga_url_dot_file ne $manga_url ) ) {
-  say STDERR "Provided -m url and .mangadl url are different!";
-  exit(1);
+ }
+}
+
+if ( defined $opt{R} ) {
+ my @manga_directories = File::Find::Rule->file()->name( '.mangadl' )->in( '.' );
+ foreach (@manga_directories) {
+  open(my $info_file, '<', $_) or die "Couldn't read .mangadl file";
+  chomp( $manga_urls{ $_ } = <$info_file> );
+  close($info_file);
  }
 }
 
@@ -310,30 +419,50 @@ if ( defined $opt{u} ) {
  $useragent=$opt{u};
 }
 
-my $manga_host = URI->new( qq(${manga_url}/) )->host;
+my $thread_limit = 2;
 
-if ( !check_host(\%hosts, $manga_host) ) {
- say "Host is not supported";
- exit(1);
+if (defined $opt{t}) {
+ if($opt{t} =~ /^[1-9]+$/) {
+  $thread_limit = $opt{t};
+ } else {
+  say "Thread number is invalid";
+  exit(1);
+ }
 }
 
-my $manga_page_content = get_html_content( $manga_url, 'main' );
+URLS_LOOP: foreach my $dotfile (keys %manga_urls) {
+
+say "Downloading chapters from ".$manga_urls{$dotfile}." in ".dirname($dotfile)." directory";
+
+my $manga_host = URI->new( qq($manga_urls{$dotfile}/) )->host;
+
+if ( !check_host(\%hosts, $manga_host) ) {
+ say "Host is not supported, skipping...";
+ next URLS_LOOP;
+}
+
+my $manga_page_content = get_html_content( $manga_urls{$dotfile} );
+
+if ( $manga_page_content->is_error ) {
+ say "Couldn't download front page for: ".$manga_urls{$dotfile};
+ next URLS_LOOP;
+}
 
 my $manga_tree = HTML::TreeBuilder::XPath->new;
 
-$manga_tree->parse($manga_page_content);
+$manga_tree->parse($manga_page_content->decoded_content);
 $manga_tree->eof;
 
 if( !manga_exists($manga_tree,$hosts{ $manga_host }{ 'exists_xpath' })) {
- say "Manga doesn't exists";
- exit(1);
+ say "Manga doesn't exists, skipping...";
+ next URLS_LOOP;
 }
 else {
  #Don't create file during listing
  #or when file already exists
- unless ( defined $opt{l} or -f ".mangadl" ) {
+ unless ( defined $opt{l} or defined $opt{R} or -f ".mangadl" ) {
   open(my $info_file, '>', ".mangadl") or die "Couldn't write .mangadl file";
-  print $info_file $manga_url;
+  say $info_file $manga_urls{$dotfile};
   close($info_file);
  }
 }
@@ -344,7 +473,7 @@ my %chapters = get_chapters($manga_tree, $hosts{ $manga_host }, @pagination);
 
 my @local_chapters;
 if ( not defined $opt{'a'} ) {
- @local_chapters = find_chapter_directories($hosts{ $manga_host });
+ @local_chapters = find_chapter_directories($hosts{ $manga_host }, dirname($dotfile));
 }
 
 if ( defined $opt{'n'} and @local_chapters and not defined $chapters{ ((sort @local_chapters)[-1]) } ) {
@@ -374,39 +503,31 @@ get_chapters_to_sync(\%chapters, \@local_chapters, \@range, defined $opt{'n'});
 
 if (defined $opt{l}) {
  list_chapters(\%chapters);
- exit(0);
+ undef(%chapters);
 }
 
 foreach my $chapter (sort { $chapters{$a}{'id'} <=> $chapters{$b}{'id'} } keys(%chapters)) {
 
-next if defined $chapters{$chapter}{'removed'};
+ next if defined $chapters{$chapter}{'removed'};
 
-my $chapter_tree= HTML::TreeBuilder::XPath->new;
-$chapter_tree->parse( get_html_content( $chapters{$chapter}{url}, "main_chapter_tree") );
-$chapter_tree->eof;
-say $chapters{$chapter}{url};
+ #Create threads on demand
+ push @thr, threads->create(
+  sub {
+   # Thread will loop until no more work
+   while (defined(my $chapter = $queue->dequeue)) {
+    say "Got new job for chapter ".$chapter->{chapter}." in ".$chapter->{dir_name};
+    download_chapter($chapter->{url}, $chapter->{chapter}, $chapter->{manga_host}, $chapter->{dir_name});
+   }
+  }
+ ) if scalar(@thr) < $thread_limit;
 
-if ( not -d $chapter) {
- make_path($chapter);
-}
+ $queue->enqueue( { url => $chapters{$chapter}{url}, chapter => $chapter, manga_host => $manga_host, dir_name => dirname($dotfile) } );
 
-my @pages = get_pages($chapter_tree, $hosts{ $manga_host }, $chapters{$chapter}{url});
-
-while (my ($page, $page_url) = each @pages) {
- if ( $page_url =~ $hosts{ $manga_host }{ 'reload_page_regexp' } ) {
-  $chapter_tree = HTML::TreeBuilder::XPath->new;
-  $chapter_tree->parse( get_html_content( $page_url, "main_pages") );
-  $chapter_tree->eof;
- }
- $page++;
- my $pages = @pages;
- my $res = get_image($chapter_tree,$hosts{ $manga_host },$chapter,$page,$pages);
- if(!$res || !$res->is_success) {
-  say "Error chapter ", join(" ", $chapter, "page", $page, "/", $pages, "url:", $page_url, $res->status_line);
- } else {
-  say "Got chapter ", join(" ", $chapter, "page", $page, "/", $pages);
- }
- $chapter_tree->delete;
 }
 
 }
+
+# Signal that there is no more work to be sent
+$queue->end();
+# Join up with the threads
+$_->join() for @thr;
