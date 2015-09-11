@@ -387,7 +387,7 @@ my %manga_urls;
 if ( not defined($opt{R}) and -f ".mangadl" ) {
  open(my $info_file, '<', ".mangadl") or die "Couldn't read .mangadl file";
  #Can't do it other way around because same urls can be in different dirs.
- $manga_urls{ '.' } = <$info_file>;
+ chomp ( $manga_urls{ '.' } = <$info_file> );
  close($info_file);
 }
 
@@ -402,6 +402,8 @@ if ( not defined $opt{R} ) {
    and ( $manga_urls{ '.' } ne $opt{m} ) ) {
    say STDERR "Provided -m url and .mangadl url are different!";
    exit(1);
+  } else {
+   $manga_urls{ '.' } = $opt{m};
   }
  }
 }
