@@ -86,6 +86,28 @@ my %hosts = (
 		},
 		'reload_page_regexp' => qr/\/[0-9]+$/,
 	},
+	'mangafox.me' =>  {
+		'exists_xpath' => '//div[@id="series_info"]',
+		'chapters_xpath' => '//div[@id="chapters"]/ul/li/div/*[self::h3 or self::h4]/a/@href',
+		'chapters_order' => 1,
+		'pages_xpath' => '//form[@id="top_bar"]/div/div[@class="l"]',
+		'build_pages' => {
+			'where' => 'REPLACE',
+			'pages' => qr/of ([0-9]+)/,
+			'start' => 2,
+			'prepare' => {
+				'1\.html$' => 'REPLACE.html'
+			},
+		},
+		'image_xpath' => '//img[@id="image"]/@src',
+		'image_extension' => qr/\.([^\.]*)$/,
+		'local_chapters' => qr/^[cv][\.TBD0-9]+$/,
+		'grab_chapters' => {
+			'1' => qr/\/(v[TBD0-9]+)\/(c[\.0-9]+)\/1\.html$/,
+			'2' => qr/\/(c[\.0-9]+)\/1\.html$/,
+		},
+		'reload_page_regexp' => qr/\/[0-9]+\.html$/,
+	},
 );
 
 #Queue for chapters
