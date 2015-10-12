@@ -79,7 +79,7 @@ my %hosts = (
 		'pages_xpath' => '(//select[@id="page_select"])[last()]/option/@value',
 		'image_xpath' => '//img[@id="comic_page"]/@src',
 		'image_extension' => qr/\.([^\.]*)$/,
-		'local_chapters' => qr/^[chv]+[0-9v_]+$/,
+		'local_chapters' => qr/^[chv]+[\.0-9v_]+$/,
 		'grab_chapters' => {
 			'1' => qr/_(v[0-9]+)_(ch[^_]+)_by_/,
 			'2' => qr/_(ch[^_]+)_by_/,

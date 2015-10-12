@@ -1,6 +1,6 @@
 ## mangadl
 
-mangadl is manga downloader written in perl. Currently supports: www.mangahere.co, www.mangapanda.com, www.goodmanga.net and bato.to.
+mangadl is manga downloader written in perl. Currently supports: www.mangahere.co, www.mangapanda.com, www.goodmanga.net, bato.to and mangafox.me.
 
 It works but it's still work in progress!!!.
 
