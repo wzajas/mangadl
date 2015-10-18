@@ -70,7 +70,7 @@ my %hosts = (
 		},
 		'reload_page_regexp' => qr/chapter\/[0-9]+\/[0-9]+$/,
 		'chapters_pagination' => '//ul[@class="pagination"]/li/button/@href',
-		'chapters_pagination_hidden' => 1,
+		'chapters_pagination_hidden' => qr/=1$/,
 	},
 	'bato.to' =>  {
 		'exists_xpath' => '//div[@id="content"]/div[2]/div/h2[@class="maintitle"]',
@@ -243,7 +243,7 @@ sub get_chapters {
  my ($tree,$manga_host, @pagination) = @_;
  my %chapters = ();
  my @links;
- my $id;
+ my $id=1;
  #undef is for page we are on right now.
  foreach my $page ( (undef,@pagination) ) {
   if( defined $page ) {
@@ -256,11 +256,11 @@ sub get_chapters {
    $tree->parse( $content->decoded_content );
    $tree->eof;
   }
+  next if defined $page and defined ($manga_host->{ 'chapters_pagination_hidden' }) and $page =~ $manga_host->{ 'chapters_pagination_hidden' };
   (@links) = (@links, $tree->findvalues ( $manga_host->{ 'chapters_xpath' } ));
   $tree->delete;
  }
- $id = @links if $manga_host->{ 'chapters_order' };
- $id = 1 if !$manga_host->{ 'chapters_order' };
+ @links = reverse(@links) if $manga_host->{ 'chapters_order' };
  foreach my $link (@links) {
   my @key;
   foreach (sort keys (%{$manga_host->{ 'grab_chapters' }})) {
@@ -268,9 +268,10 @@ sub get_chapters {
     (@key) = $link =~ $manga_host->{ 'grab_chapters' }->{$_};
    }
   }
+  #bato.to permits to upload multiple translations for chapter
+  next if $chapters{ join("/", @key) };
   $chapters{ join("/", @key) }{'url'} = $link;
-  $chapters{ join("/", @key) }{'id'} = $id-- if $manga_host->{ 'chapters_order' };
-  $chapters{ join("/", @key) }{'id'} = $id++ if !$manga_host->{ 'chapters_order' };
+  $chapters{ join("/", @key) }{'id'} = $id++;
   if( defined $manga_host->{ 'postprocess_chapters' } ) {
    foreach ( keys %{$manga_host->{ 'postprocess_chapters' }} ) {
     $chapters{ join("/", @key) }{'url'} =~ s/$_/$manga_host->{ 'postprocess_chapters' }->{$_}/;
